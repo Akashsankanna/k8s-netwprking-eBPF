@@ -1,0 +1,17 @@
+{
+  "rules": [
+    { "id": "icmp-drop",  "protocol": "icmp", "dst_port": 0,   "action": "drop",  "description": "Block all ICMP (ping) traffic" },
+    { "id": "ssh-allow",  "protocol": "tcp",  "dst_port": 22,  "action": "allow", "description": "Allow inbound SSH" },
+    { "id": "http-allow", "protocol": "tcp",  "dst_port": 80,  "action": "allow", "description": "Allow inbound HTTP" },
+    { "id": "https-allow","protocol": "tcp",  "dst_port": 443, "action": "allow", "description": "Allow inbound HTTPS" },
+    { "id": "dns-allow",  "protocol": "udp",  "dst_port": 53,  "action": "allow", "description": "Allow DNS" },
+    { "id": "telnet-drop","protocol": "tcp",  "dst_port": 23,  "action": "drop",  "description": "Block insecure Telnet" },
+    { "id": "rdp-drop",   "protocol": "tcp",  "dst_port": 3389,"action": "drop",  "description": "Block RDP from untrusted networks" },
+    { "id": "smb-drop",   "protocol": "tcp",  "dst_port": 445, "action": "drop",  "description": "Block SMB exposure" },
+    { "id": "ftp-drop",   "protocol": "tcp",  "dst_port": 21,  "action": "drop",  "description": "Block plaintext FTP control" },
+    { "id": "mysql-drop", "protocol": "tcp",  "dst_port": 3306,"action": "drop",  "description": "Block direct MySQL exposure" },
+    { "id": "postgres-drop","protocol": "tcp","dst_port": 5432,"action": "drop",  "description": "Block direct Postgres exposure" },
+    { "id": "redis-drop", "protocol": "tcp",  "dst_port": 6379,"action": "drop",  "description": "Block unauthenticated Redis exposure" },
+    { "id": "ntp-allow",  "protocol": "udp",  "dst_port": 123, "action": "allow", "description": "Allow NTP time sync" }
+  ]
+}

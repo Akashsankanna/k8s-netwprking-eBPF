@@ -1,0 +1,19 @@
+# Build artifacts
+phase1/*.o
+phase1/phase1-loader
+phase1/phase1-loader.exe
+phase2/*.o
+phase2/phase2-collector
+phase2/phase2-collector.exe
+phase3/phase3-rules-manager
+phase3/phase3-rules-manager.exe
+phase3/rules.json
+phase4/phase4-api-server
+phase4/phase4-api-server.exe
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
