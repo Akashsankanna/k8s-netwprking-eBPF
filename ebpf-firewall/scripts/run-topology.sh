@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IFACE_FILTER="${IFACE_FILTER:-eth0}"
 IFACE_MONITOR="${IFACE_MONITOR:-eth1}"
-LISTEN="${LISTEN:-:8080}"
+LISTEN="${LISTEN:-127.0.0.1:8080}"
 
 need() {
   if [[ ! -x "$1" ]]; then
@@ -33,6 +33,14 @@ echo "Phase 3 rules -> /sys/fs/bpf/firewall_rules"
 sudo "$ROOT/phase3/phase3-rules-manager" -rules "$ROOT/phase3/example_rules.json" &
 P3=$!
 sleep 1
+
+if [[ -z "${FIREWALL_API_TOKEN:-}" ]]; then
+  FIREWALL_API_TOKEN="$(openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  export FIREWALL_API_TOKEN
+  echo "Generated FIREWALL_API_TOKEN for this run (not printed). Export it in this shell before curl."
+else
+  export FIREWALL_API_TOKEN
+fi
 
 echo "Phase 4 API on ${LISTEN} (file-only until maps exist; maps should be up)"
 "$ROOT/phase4/phase4-api-server" -listen "$LISTEN" -rules-file "$ROOT/phase3/example_rules.json" -seed &

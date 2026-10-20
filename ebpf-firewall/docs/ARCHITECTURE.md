@@ -121,7 +121,7 @@ Independent XDP program: **never drops**. Updates LRU `flows` (8k 5-tuples) and 
 - `GET/POST /api/v1/rules`
 - `PUT/DELETE /api/v1/rules/{id}`
 
-**No auth/TLS.** Bind to localhost or put behind a proxy.
+**Auth and TLS.** `/health` is public. `/api/v1/*` requires `Authorization: Bearer` or `X-API-Token` unless `-allow-insecure-no-auth` is set. Default listen is `127.0.0.1:8080`. HTTPS is enabled with `-tls-cert`/`-tls-key`. Plain HTTP off loopback requires `-allow-insecure-http` (trusted reverse proxy). Rules files are written mode `0600`.
 
 Phase 3 and 4 can both write the same map (file/GitOps vs HTTP). Concurrent use can race: Phase 3’s full wipe vs Phase 4’s incremental CRUD.
 
@@ -157,5 +157,5 @@ Build: `make all` (or `make userspace` then `make bpf` on Linux). Run the four p
 
 1. `sudo ./phase1/phase1-loader -interface eth0`
 2. `sudo ./phase3/phase3-rules-manager -rules phase3/example_rules.json`
-3. `./phase4/phase4-api-server -listen :8080 -rules-file phase3/example_rules.json -seed`
+3. `FIREWALL_API_TOKEN=... ./phase4/phase4-api-server -listen 127.0.0.1:8080 -rules-file phase3/example_rules.json -seed`
 4. Optional: `sudo ./phase2/phase2-collector -interface eth1`

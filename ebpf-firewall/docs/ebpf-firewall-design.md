@@ -124,8 +124,8 @@ native XDP (`ip link show` will list `xdpdrv` support, or check
 
 ## 7. Security note on Phase 4
 
-The REST API has **no built-in authentication**. It can create/modify/
-delete firewall rules over HTTP. Do not expose `phase4-api-server`
-directly to an untrusted network — put it behind a reverse proxy with
-TLS + auth (mTLS, an API key header, or an OAuth-aware proxy), or bind it
-to `127.0.0.1`/a private interface only.
+The REST API requires a bearer token (`-api-token` or `FIREWALL_API_TOKEN`)
+for `/api/v1/*`. `/health` stays unauthenticated for liveness checks.
+Default bind is loopback. Use `-tls-cert`/`-tls-key` for HTTPS, or terminate
+TLS at a reverse proxy and pass `-allow-insecure-http`. Rules persistence
+uses file mode `0600` so other local users cannot read the policy file.

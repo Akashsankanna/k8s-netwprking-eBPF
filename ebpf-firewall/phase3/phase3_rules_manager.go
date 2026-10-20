@@ -63,11 +63,20 @@ func validate(r Rule) error {
 	return nil
 }
 
+const rulesFilePerm = 0o600
+
+func tightenFilePerms(path string) error {
+	return os.Chmod(path, rulesFilePerm)
+}
+
 func loadRules(path string) (RuleFile, error) {
 	var rf RuleFile
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return rf, fmt.Errorf("reading %s: %w", path, err)
+	}
+	if err := tightenFilePerms(path); err != nil {
+		log.Printf("could not restrict permissions on %s: %v", path, err)
 	}
 	if err := json.Unmarshal(data, &rf); err != nil {
 		return rf, fmt.Errorf("parsing %s: %w", path, err)

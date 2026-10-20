@@ -1,15 +1,20 @@
 // phase4_api_server.go
 // REST API for the firewall: full CRUD over rules (persisted to a JSON
 // file and mirrored into the pinned eBPF rules map), plus live stats and
-// a health check. This is the only phase meant to be internet/LAN-facing,
-// so put it behind auth/TLS in production — see QUICKSTART.md.
+// a health check.
+//
+// Security defaults:
+//   - API token required for /api/v1/* (Authorization: Bearer or X-API-Token)
+//   - Bind to loopback unless you pass a wider -listen address
+//   - TLS when -tls-cert and -tls-key are set; plain HTTP allowed on loopback
+//   - Rules file written with 0600 permissions
 //
 // Build: go build -o phase4-api-server phase4_api_server.go
-// Run:   ./phase4-api-server -listen :8080 -seed
+// Run:   FIREWALL_API_TOKEN=... ./phase4-api-server -listen 127.0.0.1:8080 -seed
 //
 // Endpoints:
-//   GET    /health
-//   GET    /api/v1/stats
+//   GET    /health                 (unauthenticated liveness)
+//   GET    /api/v1/stats           (authenticated)
 //   GET    /api/v1/rules
 //   POST   /api/v1/rules
 //   PUT    /api/v1/rules/{id}
@@ -18,12 +23,17 @@
 package main
 
 import (
+	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +44,8 @@ import (
 const (
 	pinnedRulesMapPath = "/sys/fs/bpf/firewall_rules"
 	pinnedStatsMapPath = "/sys/fs/bpf/firewall_stats"
+	maxBodyBytes       = 1 << 20
+	rulesFilePerm      = 0o600
 )
 
 const (
@@ -100,6 +112,9 @@ func (s *Store) LoadFromFile() error {
 	if err != nil {
 		return err
 	}
+	if err := tightenFilePerms(s.filePath); err != nil {
+		log.Printf("could not restrict permissions on %s: %v", s.filePath, err)
+	}
 	var rf struct {
 		Rules []Rule `json:"rules"`
 	}
@@ -125,7 +140,47 @@ func (s *Store) persistLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.filePath, data, 0644)
+	return writePrivateFile(s.filePath, data)
+}
+
+func writePrivateFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
+	}
+	tmp, err := os.CreateTemp(dir, ".rules-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		_ = tmp.Close()
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(rulesFilePerm); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return tightenFilePerms(path)
+}
+
+func tightenFilePerms(path string) error {
+	return os.Chmod(path, rulesFilePerm)
 }
 
 func validateRule(r Rule) error {
@@ -203,7 +258,7 @@ func (s *Store) handleRulesCollection(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var rule Rule
-		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		if err := decodeJSONBody(r, &rule); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
@@ -246,7 +301,7 @@ func (s *Store) handleRuleItem(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPut:
 		var rule Rule
-		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		if err := decodeJSONBody(r, &rule); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
@@ -293,6 +348,77 @@ func (s *Store) handleRuleItem(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func decodeJSONBody(r *http.Request, v any) error {
+	defer r.Body.Close()
+	limited := io.LimitReader(r.Body, maxBodyBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return err
+	}
+	if len(data) > maxBodyBytes {
+		return fmt.Errorf("request body too large")
+	}
+	return json.Unmarshal(data, v)
+}
+
+func requestToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
+		return strings.TrimSpace(auth[7:])
+	}
+	return strings.TrimSpace(r.Header.Get("X-API-Token"))
+}
+
+func tokensEqual(expected, got string) bool {
+	if expected == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(got)) == 1 {
+		return true
+	}
+	return false
+}
+
+func withAuth(token string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !tokensEqual(token, requestToken(r)) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="ebpf-firewall"`)
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return false // ":8080" listens on all interfaces
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateListenSecurity(addr, cert, key, token string, allowHTTP, allowNoAuth bool) error {
+	if token == "" && !allowNoAuth {
+		return fmt.Errorf("API token required: set -api-token or FIREWALL_API_TOKEN (or pass -allow-insecure-no-auth for a closed lab only)")
+	}
+	https := cert != "" || key != ""
+	if https && (cert == "" || key == "") {
+		return fmt.Errorf("both -tls-cert and -tls-key are required for HTTPS")
+	}
+	if !https && !isLoopbackAddr(addr) && !allowHTTP {
+		return fmt.Errorf("plain HTTP is only allowed on loopback; set -tls-cert/-tls-key, bind 127.0.0.1, or pass -allow-insecure-http behind a TLS proxy")
+	}
+	return nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -303,11 +429,35 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func newMux(store *Store, token string, allowNoAuth bool) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", store.handleHealth)
+	protect := func(h http.HandlerFunc) http.HandlerFunc {
+		if allowNoAuth && token == "" {
+			return h
+		}
+		return withAuth(token, h)
+	}
+	mux.HandleFunc("/api/v1/stats", protect(store.handleStats))
+	mux.HandleFunc("/api/v1/rules", protect(store.handleRulesCollection))
+	mux.HandleFunc("/api/v1/rules/", protect(store.handleRuleItem))
+	return mux
+}
+
 func main() {
-	listen := flag.String("listen", ":8080", "address to listen on")
+	listen := flag.String("listen", "127.0.0.1:8080", "address to listen on (default loopback)")
 	rulesFile := flag.String("rules-file", "example_rules.json", "JSON file used to persist rules")
 	seed := flag.Bool("seed", false, "load rules-file into the store on startup")
+	apiToken := flag.String("api-token", os.Getenv("FIREWALL_API_TOKEN"), "API bearer token (or FIREWALL_API_TOKEN)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate PEM (enables HTTPS)")
+	tlsKey := flag.String("tls-key", "", "TLS private key PEM")
+	allowHTTP := flag.Bool("allow-insecure-http", false, "allow plain HTTP on a non-loopback address (use only behind a trusted TLS reverse proxy)")
+	allowNoAuth := flag.Bool("allow-insecure-no-auth", false, "allow unauthenticated API access (closed lab only)")
 	flag.Parse()
+
+	if err := validateListenSecurity(*listen, *tlsCert, *tlsKey, *apiToken, *allowHTTP, *allowNoAuth); err != nil {
+		log.Fatal(err)
+	}
 
 	store := NewStore(*rulesFile)
 	if *seed {
@@ -317,12 +467,31 @@ func main() {
 		log.Printf("seeded %d rules from %s", len(store.rules), *rulesFile)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", store.handleHealth)
-	mux.HandleFunc("/api/v1/stats", store.handleStats)
-	mux.HandleFunc("/api/v1/rules", store.handleRulesCollection)
-	mux.HandleFunc("/api/v1/rules/", store.handleRuleItem)
+	handler := newMux(store, *apiToken, *allowNoAuth)
+	srv := &http.Server{
+		Addr:              *listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
 
-	log.Printf("✅ Phase 4 API server listening on %s", *listen)
-	log.Fatal(http.ListenAndServe(*listen, mux))
+	if *apiToken != "" {
+		log.Printf("authentication enabled for /api/v1/*")
+	} else {
+		log.Printf("WARNING: API authentication disabled (-allow-insecure-no-auth)")
+	}
+	if *tlsCert != "" {
+		log.Printf("Phase 4 API server listening on https://%s", *listen)
+		log.Fatal(srv.ListenAndServeTLS(*tlsCert, *tlsKey))
+	}
+	if !isLoopbackAddr(*listen) {
+		log.Printf("WARNING: plain HTTP on non-loopback %s; TLS must be terminated by a trusted reverse proxy", *listen)
+	}
+	log.Printf("Phase 4 API server listening on http://%s", *listen)
+	log.Fatal(srv.ListenAndServe())
 }

@@ -35,12 +35,14 @@ ebpf-firewall/
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/health` | liveness + whether the eBPF maps are attached |
+| GET | `/health` | liveness + whether the eBPF maps are attached (no auth) |
 | GET | `/api/v1/stats` | packet counters (total/dropped/allowed/icmp_dropped) + rule count |
 | GET | `/api/v1/rules` | list all rules |
 | POST | `/api/v1/rules` | create a rule (JSON body: id, protocol, dst_port, action, description) |
 | PUT | `/api/v1/rules/{id}` | replace a rule |
 | DELETE | `/api/v1/rules/{id}` | remove a rule |
+
+`/api/v1/*` requires `Authorization: Bearer <token>` or `X-API-Token`. Defaults: listen `127.0.0.1:8080`, rules file mode `0600`. Optional HTTPS: `-tls-cert` / `-tls-key`.
 
 ## Make targets
 

@@ -71,7 +71,8 @@ $(P4_API): phase4/phase4_api_server.go
 
 generate-rules:
 	@cp -n phase3/example_rules.json phase3/rules.json 2>/dev/null || true
-	@echo "Rules file ready at phase3/example_rules.json"
+	@chmod 600 phase3/example_rules.json phase3/rules.json 2>/dev/null || true
+	@echo "Rules file ready at phase3/example_rules.json (mode 0600 when chmod is supported)"
 
 install-deps:
 	sudo apt-get update
@@ -92,8 +93,8 @@ endif
 test:
 	cd phase1 && go vet phase1_loader.go && go build -o /dev/null phase1_loader.go
 	cd phase2 && go vet phase2_collector.go && go build -o /dev/null phase2_collector.go
-	cd phase3 && go vet ./... && go build -o /dev/null phase3_rules_manager.go
-	cd phase4 && go vet ./... && go build -o /dev/null phase4_api_server.go
+	cd phase3 && go vet ./... && go test ./... && go build -o /dev/null phase3_rules_manager.go
+	cd phase4 && go vet ./... && go test ./... && go build -o /dev/null phase4_api_server.go
 	@echo "All phases pass go vet / build check."
 
 clean:

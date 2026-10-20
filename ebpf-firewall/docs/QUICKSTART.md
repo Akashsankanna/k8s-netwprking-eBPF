@@ -65,8 +65,15 @@ sudo ./phase3/phase3-rules-manager -rules phase3/example_rules.json
 # Terminal 3 — REST API (no root needed; talks to the pinned maps)
 # -seed loads the JSON into API memory only. Phase 3 (above) is what
 # writes the full rule set into the kernel map.
-./phase4/phase4-api-server -listen :8080 -rules-file phase3/example_rules.json -seed
+# Token is required for /api/v1/*. Health stays public.
+export FIREWALL_API_TOKEN="$(openssl rand -hex 32)"
+./phase4/phase4-api-server -listen 127.0.0.1:8080 -rules-file phase3/example_rules.json -seed
 ```
+
+Bind `127.0.0.1` for local use. For LAN/production, pass `-tls-cert` and
+`-tls-key`, or put a TLS reverse proxy in front and start with
+`-allow-insecure-http` so the process itself may speak plain HTTP to that
+proxy only. Do not use `-allow-insecure-no-auth` outside a closed lab.
 
 Optional observer on a second interface:
 
@@ -82,20 +89,26 @@ sudo ./phase2/phase2-collector -interface eth1
 ## 4. Test it
 
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/api/v1/stats
-curl http://localhost:8080/api/v1/rules
+curl http://127.0.0.1:8080/health
+
+# unauthenticated API calls must fail with 401
+curl -i http://127.0.0.1:8080/api/v1/rules
+
+curl -H "Authorization: Bearer $FIREWALL_API_TOKEN" http://127.0.0.1:8080/api/v1/stats
+curl -H "Authorization: Bearer $FIREWALL_API_TOKEN" http://127.0.0.1:8080/api/v1/rules
 
 # generate some traffic
 ping -c 3 8.8.8.8        # should be dropped (default policy blocks ICMP)
 
 # add a custom rule via the API
-curl -X POST http://localhost:8080/api/v1/rules \
+curl -X POST http://127.0.0.1:8080/api/v1/rules \
+  -H "Authorization: Bearer $FIREWALL_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"id":"block-telnet","protocol":"tcp","dst_port":23,"action":"drop","description":"custom rule"}'
 
 # remove it
-curl -X DELETE http://localhost:8080/api/v1/rules/block-telnet
+curl -X DELETE http://127.0.0.1:8080/api/v1/rules/block-telnet \
+  -H "Authorization: Bearer $FIREWALL_API_TOKEN"
 ```
 
 Watch Phase 1's terminal — it prints stats every 5s (`total`, `dropped`,
@@ -124,5 +137,8 @@ pins.)
 | `attaching XDP program` fails with "operation not supported" | Your NIC/driver may not support XDP generic mode either — try a different interface, or check `dmesg` |
 | Phase 3/4 log "rules map not available" | Start `phase1-loader` first |
 | `curl: (7) Failed to connect` on :8080 | Phase 4 isn't running, or a firewall rule (ironically) is blocking the port |
+| HTTP 401 on `/api/v1/*` | Pass `Authorization: Bearer $FIREWALL_API_TOKEN` (or `X-API-Token`) |
+| Phase 4 exits: "API token required" | Export `FIREWALL_API_TOKEN` or pass `-api-token` |
+| Phase 4 exits: "plain HTTP is only allowed on loopback" | Bind `127.0.0.1`, add `-tls-cert`/`-tls-key`, or use `-allow-insecure-http` behind a TLS proxy |
 | `make install-deps` partial failures on `security.ubuntu.com` | Harmless if `clang`/`go` still installed — re-run `apt-get install -y --fix-missing <pkg>` for anything missing |
 | Rules don't seem to apply | Confirm you passed `-seed` to phase4, or that phase3 is running and watching the file |
